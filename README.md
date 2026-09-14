@@ -4,6 +4,7 @@
 >
 > - 学习路线：[`../学习路线.MD`](../学习路线.MD)
 > - 详细日程：[`../学习安排/总安排计划.MD`](../学习安排/总安排计划.MD)
+> - 👉 **今日任务：[`../学习安排/Day01-学习指南.md`](../学习安排/Day01-学习指南.md)**
 
 学习的核心原则不是「看完视频」，而是：
 
@@ -198,16 +199,31 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 
 ## 七、学习进度
 
+> ⚠️ **状态含义**：
+> `✅` = **你亲自跑通过** ｜ `🔧` = 代码已写好但**你还没实跑/手敲** ｜ `⬜` = 未开始
+
 | Day | 主题 | 状态 |
 | --- | --- | --- |
-| 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ |
-| 01+ | **第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆** | ✅ |
+| 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ 环境已就绪 |
+| 01+ | 第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆 | 🔧 **待你跑通并手敲** |
 | 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
 | 05 | lambda / map / filter / 装饰器 / 生成器 | ⬜ |
 | 06 | async / await / asyncio | ⬜ |
 | 07 | Token / 成本统计 / 错误重试 | ⬜ |
+
+### Day 1 待办（详见学习指南）
+
+```
+□ 填 .env 的 DEEPSEEK_API_KEY（当前仍是占位符）
+□ uv run python main.py 1     能出回答
+□ uv run python main.py 3     能流式输出
+□ 自己敲 day01_llm_basics/my_chat_v1.py ~ v4.py（不用看 llm_client.py）
+□ v4 能记住上下文（“我叫 Jack” → “我叫什么”）
+□ 写 notes/day01-我的笔记.md（自己的话）
+□ git commit + push
+```
 
 ---
 
