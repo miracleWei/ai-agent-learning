@@ -40,6 +40,13 @@ ai-agent-learning/
 ├── main.py                      # 最小可运行示例（3 个 demo）
 ├── chat.py                      # ⭐ CLI 对话：流式 + 上下文记忆
 │
+├── day01_llm_basics/            # ⭐ Day 1 手敲练习：v1 → v4 递进
+│   ├── README.md                # 任务书 + 验收标准
+│   ├── my_chat_v1.py            # v1 最小调用
+│   ├── my_chat_v2.py            # v2 + 流式输出
+│   ├── my_chat_v3.py            # v3 + 循环（故意没记忆）
+│   └── my_chat_v4.py            # v4 ⭐ + 上下文记忆
+│
 ├── notes/                       # 每日学习笔记 + 面试题
 │   ├── day01.md                 # Python 环境与项目结构
 │   └── day01-llm-client.md      # LLM Client 封装（含 Java↔AI 对照）
@@ -209,7 +216,7 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 | --- | --- | --- |
 | 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ 环境已就绪 |
 | 01+ | 第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆 | ✅ 已实测跑通 |
-| 01++ | **自己手敲 v1～v4 + 写自己的笔记** | ⬜ **仅剩这一步** |
+| 01++ | **手敲练习 v1～v4 + 写自己的笔记** | 🔧 代码就绪，待你手敲 |
 | 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
@@ -225,10 +232,17 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 ✅ uv run python main.py 3     能流式输出（已验证）
 ✅ 记忆机制已验证：带历史答对 / 不带历史答不出
 
-⬜ 自己敲 day01_llm_basics/my_chat_v1.py ~ v4.py（不用看 llm_client.py）⬅️ 仅剩这一步
-⬜ 写 notes/day01-我的笔记.md（自己的话）
-⬜ git commit + push
+✅ day01_llm_basics/my_chat_v1.py ~ v4.py 已就绪，四个版本实测均通过
+⬜ 你本人在终端走一遍 v1→v4，重点亲手试 v3「它忘了」→ v4「它记住了」
+⬜ 写 notes/day01-我的笔记.md（自己的话，不用 AI 代写）
 ```
+
+**v1～v4 实测对照（这是今天最关键的证据）：**
+
+| | v3（无记忆） | v4（有记忆） |
+| --- | --- | --- |
+| 问「我叫什么」 | 「I don't know your name」❌ | 「Your name is Jack」✅ |
+| 输入 token 变化 | 8 → 9（**不变**） | 21 → 43 → 77（**递增**） |
 
 ---
 
