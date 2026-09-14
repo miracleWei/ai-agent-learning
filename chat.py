@@ -73,6 +73,24 @@ DEFAULT_SYSTEM_PROMPT = (
 # ---------------------------------------------------------------
 EXIT_WORDS = {"exit", "quit", "bye", "/exit", "/quit", ":q"}
 
+# ---------------------------------------------------------------
+#  ⭐ 滑动窗口大小：最多保留最近多少条【对话】消息（不含 system）
+#
+#  为什么需要这个上限？因为模型 API 是【无状态】的 ——
+#  我们每轮都要把完整历史发过去（这是「记忆」的实现方式），
+#  于是历史会无限增长，带来三个问题：
+#
+#      ① Context Window 超限   → 请求直接失败
+#      ② 每轮 token 变多       → 越来越慢、越来越贵
+#      ③ 无关历史淹没关键信息  → 模型注意力被稀释，回答反而变差
+#
+#  ⭐ 记住这句话：Context 越多，不代表 AI 越聪明。
+#
+#  这里取 6 只是为了便于观察教学效果，
+#  真实生产里不会用「固定条数」这么粗的策略（见文件末尾的说明）。
+# ---------------------------------------------------------------
+MAX_HISTORY_MESSAGES = 6
+
 # 帮助文本。用三引号字符串（Python 的多行字符串），
 # 相当于 Java 15+ 的 text block（""" ... """）。
 # .strip() 是为了去掉开头/结尾多余的换行。
@@ -82,6 +100,10 @@ HELP_TEXT = """
   /history  查看当前上下文条数与内容概览
   /help     显示本帮助
   exit      退出程序
+
+说明：
+  为保证 token 不无限增长，程序会自动做【滑动窗口裁剪】：
+  只保留最近若干条对话消息，但 system（人设）永远保留。
 """.strip()
 
 
@@ -139,9 +161,114 @@ def parse_args() -> argparse.Namespace:
         help="自定义系统提示词",
     )
 
+    # -----------------------------------------------------------
+    #  --max-history 控制滑动窗口大小
+    #
+    #  type=int 表示自动把命令行上的字符串转成整数，
+    #  并且【自动校验】—— 传 --max-history abc 会直接报错，
+    #  不用我们自己写 int() 和 try/except。
+    #
+    #  参数类型注解写 int 是因为 argparse 靠它填默认值类型；
+    #  但命令行上敲进来的原始值永远是字符串，所以要声明 type=int。
+    #
+    #  用法：
+    #      uv run python chat.py --max-history 4    # 只留最近 4 条
+    #      uv run python chat.py --max-history 0    # 完全不传历史（实验用）
+    # -----------------------------------------------------------
+    parser.add_argument(
+        "--max-history",
+        type=int,
+        default=MAX_HISTORY_MESSAGES,
+        help=(
+            f"滑动窗口大小：最多保留最近 N 条对话消息（不含 system），"
+            f"默认 {MAX_HISTORY_MESSAGES}；设为 0 则不传任何历史"
+        ),
+    )
+
     # parse_args() 会真正去读 sys.argv（命令行上敲的那些词），
     # 解析后返回一个对象。
     return parser.parse_args()
+
+
+def trim_messages(
+    messages: list[Message],
+    max_messages: int = MAX_HISTORY_MESSAGES,
+) -> list[Message]:
+    """滑动窗口裁剪：只保留最近 max_messages 条【非 system】消息。
+
+    背景（为什么需要这个函数）：
+        模型 API 是【无状态】的，每轮都要把完整历史发过去。
+        于是历史无限增长，导致：Context 超限 / 成本上升 / 注意力稀释。
+
+        这个函数实现最简单的一种对策 —— 滑动窗口（Sliding Window）。
+
+    ⭐ 三条设计规则（不是简单的 list[-N:]）：
+
+        ① system 消息【永远保留】
+           system 是人设/规则，不属于「对话内容」。
+           而且它在列表最前面，天然不包含在「最近 N 条」里。
+           所以要先把它摘出来，裁剪完再拼回去。
+
+        ② 裁剪必须以【轮】为单位，不能切开 user/assistant 对
+           一轮完整对话 = user + assistant，成对出现。
+           如果只留下 assistant 而丢掉它对应的 user，
+           模型会看到「一个没有任何提问的回答」，语义是残缺的。
+           所以裁剪后若开头是 assistant，必须把它也去掉。
+
+        ③ 裁剪后首条必须是 user
+           对话历史的结构约定是「user 起头，user/assistant 交替」。
+           以 assistant 开头虽不报错，但会让模型困惑。
+           （规则 ② 和 ③ 其实可以用同一段代码同时满足。）
+
+    Args:
+        messages: 完整上下文，可能含 system / user / assistant。
+        max_messages: 最多保留的【非 system】消息条数。
+
+    Returns:
+        新的列表（不修改入参）。
+
+    Example:
+        >>> raw = [{"role": "system", "content": "s"},
+        ...        {"role": "user", "content": "u1"},
+        ...        {"role": "assistant", "content": "a1"},
+        ...        {"role": "user", "content": "u2"},
+        ...        {"role": "assistant", "content": "a2"}]
+        >>> [m["content"] for m in trim_messages(raw, 2)]
+        ['s', 'u2', 'a2']
+    """
+    # ① 把 system 消息摘出来（正常只有开头一条，但写成列表更稳妁）
+    #    用 m.get("role") 而不是 m["role"]，避免字段缺失时直接 KeyError
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    dialog = [m for m in messages if m.get("role") != "system"]
+
+    # 没超限就原样返回（不必多复制一份）
+    if len(dialog) <= max_messages:
+        return messages
+
+    # ⚠️⚠️ 边界：max_messages <= 0 必须单独处理
+    #
+    #    因为 Python 里 list[-0:] 等价于 list[0:]，会返回【整个列表】！
+    #    （-0 就是 0，而切片起点为 0 表示"从头开始"）
+    #    这行不加，--max-history 0 就完全不会生效。
+    if max_messages <= 0:
+        return system_msgs
+
+    # ② 取最近 max_messages 条
+    kept = dialog[-max_messages:]
+
+    # ③ 从第一条 user 开始切
+    #
+    #    为什么要用 while 找而不是只判断一次？
+    #      因为 kept 开头可能连续多条都不是 user（比如工具调用场景下的
+    #      tool 消息）。一次判断处理不了，循环才能确保找到真正的边界。
+    #    找不到 user 时 start 会走到末尾，kept 变成空列表 —— 语义上也对：
+    #      没有"提问"就没什么可保留的。
+    start = 0
+    while start < len(kept) and kept[start].get("role") != "user":
+        start += 1
+    kept = kept[start:]
+
+    return system_msgs + kept
 
 
 def show_history(messages: list[Message]) -> None:
@@ -281,6 +408,8 @@ def main() -> int:
     # config.describe() 会显示模型/地址/Key 来源，但【不会泄露 Key 明文】
     print(f"  {llm.config.describe()}")
     print(f"  输出模式：{'流式 Streaming' if stream_mode else '一次性'}")
+    # 把窗口大小显式打出来，方便用 --max-history 做实验对比
+    print(f"  滑动窗口：最多保留最近 {args.max_history} 条对话消息（不含 system）")
     print("  输入 exit 退出，/help 查看命令")
     print("=" * 64)
 
@@ -465,6 +594,29 @@ def main() -> int:
         # ---------------------------------------------------------------
         messages.append({"role": "user", "content": text})
 
+        # ---------------------------------------------------------------
+        #  4.5 ⭐⭐ 滑动窗口裁剪 —— 必须在【发请求之前】
+        #
+        #  为什么放在这里而不是别处？
+        #    ① 放在 append 之后：保证刚说的话一定在窗口内（不会被裁掉）
+        #    ② 放在 try 之前：因为失败时要 pop() 回滚，那时列表必须是
+        #       "裁剪后"的这个版本，否则 pop 会弹错东西
+        #
+        #  ⚠️ 注意这里【重新赋值】了 messages，所以裁剪是【永久】生效的 ——
+        #     被丢掉的历史真的没了，/history 也看不到。
+        #
+        #     这是刻意的取舍，但真实产品里往往不这么做，而是：
+        #         保留【完整】历史在本地/数据库，只对"发出去的那份"裁剪副本
+        #     这样做的好处：
+        #         - /history 能看到全程
+        #         - 以后想回头做总结、抽 Memory、检索旧对话时有数据可用
+        #     代价是多占内存。
+        #     两种做法都能跑，关键是【意识到这是在用内存换什么】。
+        # ---------------------------------------------------------------
+        before_count = len(messages)
+        messages = trim_messages(messages, args.max_history)
+        trimmed_count = before_count - len(messages)
+
         # end="" 让光标停在同一行，flush=True 保证立即输出。
         # 这样流式返回的第一个字才能马上显示在 "AI：" 后面，
         # 而不是等缓冲区满了才一起冒出来。
@@ -619,12 +771,15 @@ def main() -> int:
         #  ⚠️ 它是【有状态的】—— 所以必须在这次请求之后、
         #     下次请求之前读，否则会被覆盖。
         #
-        #  ⭐ 观察重点：留意"输入 token"是不是一轮比一轮大。
-        #     那是历史在不断重发的直接证据，也是"记忆的代价"：
-        #     上下文越长，每轮越慢、越贵，最终会撞上模型的上限。
-        #     解法（截断/摘要/检索）就是后面 RAG 的动机所在。
+        #  ⭐ 观察重点（Challenge 2）：
+        #     留意"输入 token"。有滑动窗口后，它会在某个值附近【稳定下来】
+        #     而不是一直涨 —— 这就是裁剪生效的证据。
+        #
+        #     同时注意一个代价：被裁掉的内容模型【真的看不到了】。
+        #     比如第 1 句说了"我叫 Jack"，裁掉之后它就再也答不出你的名字。
         # ---------------------------------------------------------------
-        print(f"[{elapsed:.1f}s · {llm.usage_text()} · 上下文 {len(messages)} 条]")
+        trim_note = f" · 本轮裁掉 {trimmed_count} 条" if trimmed_count else ""
+        print(f"[{elapsed:.1f}s · {llm.usage_text()} · 上下文 {len(messages)} 条{trim_note}]")
 
     # while 循环结束（用户输入了退出词，或 Ctrl+C / 输入流结束）
     return 0
