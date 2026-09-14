@@ -4,8 +4,15 @@ version = "0.1.0"
 description = "Java 后端转 AI Agent 应用工程师的 180 天学习仓库"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "openai>=3.13.0",
+    "python-dotenv>=1.2.3",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

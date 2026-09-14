@@ -27,19 +27,42 @@
 
 ```
 ai-agent-learning/
+│
 ├── README.md                    # 本文件：项目说明 + 学习进度
-├── pyproject.toml               # 项目元信息（uv 识别它）
+├── pyproject.toml               # 项目元信息 + 依赖 + 镜像源
+├── uv.lock                      # 依赖锁定文件（保证可复现）
 ├── .gitignore                   # 忽略 .venv / __pycache__ / .env
+├── .env.example                 # 配置模板（入库，不含真实密钥）
+├── .env                         # 本地真实密钥（⚠️ 不入库）
+│
+├── llm_client.py                # ⭐ 核心：LLM 客户端封装（与厂商无关）
+├── main.py                      # 最小可运行示例（3 个 demo）
+├── chat.py                      # ⭐ CLI 对话：流式 + 上下文记忆
+│
 ├── notes/                       # 每日学习笔记 + 面试题
-│   └── day01.md
-└── day01_python_basics/         # Day 1 代码
-    ├── README.md                # 今日任务清单 + 验收标准
-    ├── hello.py                 # 任务 1：第一个 Python 函数
-    ├── env_check.py             # 任务 2：环境自检脚本
-    └── greeter/                 # 任务 3：一个标准 Python「包」
+│   ├── day01.md                 # Python 环境与项目结构
+│   └── day01-llm-client.md      # LLM Client 封装（含 Java↔AI 对照）
+│
+└── day01_python_basics/         # Day 1 热身：Python 基础
+    ├── README.md
+    ├── hello.py
+    ├── env_check.py
+    └── greeter/
         ├── __init__.py
         ├── core.py
         └── __main__.py
+```
+
+### 三层调用关系
+
+```
+chat.py          ── CLI 交互层（读输入 / 维护历史 / 打印）
+     ↓
+llm_client.py    ── 客户端封装层（配置 / 请求 / 错误翻译 / 流式）
+     ↓
+openai SDK       ── 协议层（HTTP + SSE）
+     ↓
+LLM API          ── DeepSeek / Qwen / GLM / OpenAI
 ```
 
 ---
@@ -67,40 +90,98 @@ uv venv
 ### 3. 安装依赖
 
 ```powershell
-uv pip install -r requirements.txt   # 当前还没有第三方依赖
-# 或者
-uv sync                              # 依据 pyproject.toml 同步
+uv sync          # 依 pyproject.toml 安装，几秒钟搞定
 ```
 
-### 4. 运行 Day 1 代码
+> `uv` 已配置清华镜像源（写在 `pyproject.toml` 的 `[[tool.uv.index]]`），
+> 因为 `pypi.org` 在国内直连很慢。
+
+### 4. 配置 API Key（‼️ 必做）
 
 ```powershell
-python day01_python_basics\hello.py
-python day01_python_basics\env_check.py
-
-# 运行「包」形式的程序：必须用 -m（模块方式），且不要写 .py
-python -m day01_python_basics.greeter Tom
-# 输出：Hello Tom
+Copy-Item .env.example .env
 ```
+
+然后编辑 `.env`，把这一行换成你的真实密钥：
+
+```
+LLM_API_KEY=sk-你的DeepSeek密钥
+```
+
+> DeepSeek 密钥申请：<https://platform.deepseek.com/api_keys>
+> **不要把这个 Key 发到任何聊天窗口里，包括 AI 助手。**
+
+### 5. 验证环境
+
+```powershell
+uv run python day01_python_basics\env_check.py   # 确认在虚拟环境里
+uv run python main.py 1                          # 最小调用，能出字就通了
+```
+
+### 6. 开始对话
+
+```powershell
+# 流式输出（默认），体验和 ChatGPT 网页版一样
+uv run python chat.py
+
+# 一次性输出，方便查看 token 用量
+uv run python chat.py --no-stream
+
+# 自定义人设
+uv run python chat.py --system "你是一个只用古文回答的助手"
+```
+
+会话内命令：`/clear` 清空上下文 · `/history` 查看上下文 · `/help` 帮助 · `exit` 退出
 
 ---
 
-## 四、学习进度
+## 四、切换其他大模型
+
+代码**与厂商无关**，只改 `.env` 里三个变量即可，Python 一行都不用动：
+
+| 厂商 | LLM_BASE_URL | LLM_MODEL |
+| --- | --- | --- |
+| **DeepSeek**（当前） | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| 阿里云百炼 Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
+| Moonshot Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| OpenAI（需代理） | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| 本地 Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` |
+
+---
+
+## 五、故障排查
+
+| 现象 | 原因 | 解决 |
+| --- | --- | --- |
+| `❌ 鉴权失败（401）` | Key 错误 / 已失效 | 重新生成 Key，更新 `.env` |
+| `❌ 余额不足（402）` | 账户没钱 | 去平台充值 |
+| `❌ 连接不上 LLM 服务` | 网络 / 地址写错 | 检查 `LLM_BASE_URL`；境外服务需开代理 |
+| `❌ 找不到资源（404）` | 模型名或地址写错 | 对照上表核对 |
+| `❌ .env 里的 LLM_API_KEY 还是占位符` | 忘了填 Key | 编辑 `.env` |
+| 中文输出乱码 | PowerShell 编码 | 先执行 `chcp 65001` |
+| 文字卡住不逐字显示 | 缓冲区未刷新 | 代码里必须有 `flush=True` |
+
+---
+
+## 六、学习进度
 
 | Day | 主题 | 状态 |
 | --- | --- | --- |
 | 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ |
-| 02 | list / dict / tuple / set / 推导式 | ⬜ |
+| 01+ | **第一个 LLM Client：调用 / Streaming / CLI 对话 / 上下文记忆** | ✅ |
+| 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
 | 05 | lambda / map / filter / 装饰器 / 生成器 | ⬜ |
 | 06 | async / await / asyncio | ⬜ |
-| 07 | 小项目：Python LLM API Client | ⬜ |
+| 07 | Token / 成本统计 / 错误重试 | ⬜ |
 
 ---
 
-## 五、约定
+## 七、约定
 
-1. **每天一个 commit**，提交信息格式：`day01: Python 环境与项目结构`。
-2. **API Key 绝不入库**：统一放在 `.env`，`.env` 已在 `.gitignore` 中。
-3. **每天写笔记**：`notes/dayNN.md`，包含「今天学了什么 / 踩了什么坑 / 面试题」。
+1. **每天一个 commit**，提交信息格式：`day01: 主题`。
+2. **API Key 绝不入库**：统一放在 `.env`；提交前可用 `git status` 确认 `.env` 不在列表里。
+3. **每天写笔记**：`notes/dayNN*.md`，包含「今天学了什么 / 踩了什么坑 / 面试题」。
+4. **注释写「为什么」**，而不是复述代码「做了什么」。
