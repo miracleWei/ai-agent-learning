@@ -17,12 +17,33 @@ import os
 import sys
 import time
 
-from llm_client import LLMClient, LLMError
+from llm_client import (
+    API_KEY_VARS,
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    LLMClient,
+    LLMError,
+)
 
 # 每个 demo 用的问题
 QUESTION_SIMPLE = "你好，请用一句话介绍一下你自己。"
 QUESTION_CLASS = "请解释一下什么是 Java Spring Boot，假设我是初学者，200 字以内。"
 QUESTION_STREAM = "请用 100 字左右介绍一下 JVM 的垃圾回收机制。"
+
+
+def _raw_api_key() -> str | None:
+    """按优先级从环境变量里找一个非空的 Key。
+
+    ⚠️ 为什么不直接写 ``os.getenv("DEEPSEEK_API_KEY")``？
+    因为那样变量名就散落在多个文件里了 —— 一旦改名，很容易漏改某一处。
+    这里复用 ``llm_client.API_KEY_VARS`` 作为**单一数据源**
+    （这个坑真踩过：改名后 demo1 漏改，报 Missing credentials）。
+    """
+    for name in API_KEY_VARS:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def demo1_raw_sdk() -> None:
@@ -36,12 +57,12 @@ def demo1_raw_sdk() -> None:
 
     load_dotenv()
     client = OpenAI(
-        api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("LLM_BASE_URL"),
+        api_key=_raw_api_key(),
+        base_url=os.getenv("LLM_BASE_URL") or DEFAULT_BASE_URL,
     )
 
     response = client.chat.completions.create(
-        model=os.getenv("LLM_MODEL", "deepseek-chat"),
+        model=os.getenv("LLM_MODEL") or DEFAULT_MODEL,
         messages=[{"role": "user", "content": QUESTION_SIMPLE}],
     )
     print(response.choices[0].message.content)
@@ -91,7 +112,7 @@ def main() -> int:
             func()
         except LLMError as exc:
             print(exc)
-            print("\n提示：先把 .env 里的 LLM_API_KEY 填好再运行。")
+            print(f"\n提示：先确认 .env 里的 {API_KEY_VARS[0]} 已填好再运行。")
             return 1
         except KeyboardInterrupt:
             print("\n已中断")

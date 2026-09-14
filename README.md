@@ -194,6 +194,9 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 | `❌ .env 里的 DEEPSEEK_API_KEY 还是占位符` | 忘了填 Key | 编辑 `.env` |
 | 中文输出乱码 | PowerShell 编码 | 先执行 `chcp 65001` |
 | 文字卡住不逐字显示 | 缓冲区未刷新 | 代码里必须有 `flush=True` |
+| `Missing credentials`（Key 明明填了） | 变量名不一致（如代码读 `LLM_API_KEY`，`.env` 写 `DEEPSEEK_API_KEY`） | 改名为 `API_KEY_VARS` 里任一个，或改 `.env` |
+| `UnicodeEncodeError: surrogates not allowed` | 用管道把中文喂给 python（PowerShell 5.1 的 `$OutputEncoding` 默认 US-ASCII） | 直接在终端手敲输入，别用管道 |
+| `VIRTUAL_ENV=... does not match...` | 激活了别的目录的 `.venv` | 删掉多余的那个（`Remove-Item "F:\笔记\AI-学习\.venv" -Recurse -Force`） |
 
 ---
 
@@ -205,7 +208,8 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 | Day | 主题 | 状态 |
 | --- | --- | --- |
 | 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ 环境已就绪 |
-| 01+ | 第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆 | 🔧 **待你跑通并手敲** |
+| 01+ | 第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆 | ✅ 已实测跑通 |
+| 01++ | **自己手敲 v1～v4 + 写自己的笔记** | ⬜ **仅剩这一步** |
 | 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
@@ -216,13 +220,14 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 ### Day 1 待办（详见学习指南）
 
 ```
-□ 填 .env 的 DEEPSEEK_API_KEY（当前仍是占位符）
-□ uv run python main.py 1     能出回答
-□ uv run python main.py 3     能流式输出
-□ 自己敲 day01_llm_basics/my_chat_v1.py ~ v4.py（不用看 llm_client.py）
-□ v4 能记住上下文（“我叫 Jack” → “我叫什么”）
-□ 写 notes/day01-我的笔记.md（自己的话）
-□ git commit + push
+✅ 填 .env 的 DEEPSEEK_API_KEY（已完成）
+✅ uv run python main.py 1     能出回答（已验证）
+✅ uv run python main.py 3     能流式输出（已验证）
+✅ 记忆机制已验证：带历史答对 / 不带历史答不出
+
+⬜ 自己敲 day01_llm_basics/my_chat_v1.py ~ v4.py（不用看 llm_client.py）⬅️ 仅剩这一步
+⬜ 写 notes/day01-我的笔记.md（自己的话）
+⬜ git commit + push
 ```
 
 ---
