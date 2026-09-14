@@ -203,8 +203,11 @@ git status --short
 client = OpenAI(api_key="sk-1234567890")
 
 # ✅ 从环境变量读
-api_key = os.getenv("LLM_API_KEY")
+api_key = os.getenv("DEEPSEEK_API_KEY")
 ```
+
+变量名按优先级依次尝试：`DEEPSEEK_API_KEY` → `LLM_API_KEY` → `OPENAI_API_KEY`。
+这样既能跟着主推厂商（DeepSeek）走，又兼容通用命名。
 
 理由：密钥会轮换、不同环境不同值、泄漏后无法撤销（Git 历史里删不掉）。
 
@@ -215,7 +218,7 @@ api_key = os.getenv("LLM_API_KEY")
 openai.AuthenticationError: Error code: 401 - {'error': {...}}
 
 # ✅ 翻译成可操作提示
-❌ 鉴权失败（401）：API Key 无效或已失效。请检查 .env 里的 LLM_API_KEY。
+❌ 鉴权失败（401）：API Key 无效或已失效。请检查 .env 里的 DEEPSEEK_API_KEY。
 ```
 
 ⚠️ **踩坑点：异常判断顺序**。`AuthenticationError` 是 `APIStatusError` 的子类，

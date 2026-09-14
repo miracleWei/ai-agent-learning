@@ -105,11 +105,16 @@ Copy-Item .env.example .env
 然后编辑 `.env`，把这一行换成你的真实密钥：
 
 ```
-LLM_API_KEY=sk-你的DeepSeek密钥
+DEEPSEEK_API_KEY=sk-你的DeepSeek密钥
 ```
 
 > DeepSeek 密钥申请：<https://platform.deepseek.com/api_keys>
 > **不要把这个 Key 发到任何聊天窗口里，包括 AI 助手。**
+>
+> 💡 变量名无需纠结：代码按优先级依次尝试
+> `DEEPSEEK_API_KEY` → `LLM_API_KEY` → `OPENAI_API_KEY`，填哪个都能跑。
+> 启动时状态栏会显示 `Key=sk-xxx (来自 DEEPSEEK_API_KEY)`，一眼看出配置来源。
+> 同理，`LLM_BASE_URL` 不填时默认走 DeepSeek，**不会误打到 OpenAI 官方地址**。
 
 ### 5. 验证环境
 
@@ -135,22 +140,49 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 
 ---
 
-## 四、切换其他大模型
+## 四、技术栈路线（中国大陆 AI 生态）
+
+> 目标不是跟国外教程做 Demo，而是**对标中国大陆企业 AI 应用开发岗位**的实际技术栈。
+> 所以从 Day 1 起就以国内模型为主力。
+
+| 层次 | 选用 | 说明 |
+| --- | --- | --- |
+| **主模型** | DeepSeek、Qwen | 国内直连、便宜、兼容 OpenAI 协议 |
+| 辅助了解 | GLM、Kimi、豆包 | 按需切换，代码无需改 |
+| Embedding | BGE、Qwen-Embedding | 中文语义检索效果好 |
+| 向量库 | pgvector、Milvus、Elasticsearch | 优先 pgvector（契合企业后端） |
+| Java 侧 | Spring Boot、Spring AI | 你的主战场 |
+| Python 侧 | FastAPI、Pydantic | 写 Demo 与 Agent |
+| Agent 框架 | Spring AI、LangGraph | Java 主线 + Python 参考 |
+| 协议 | MCP | 必学 |
+| 基础设施 | PostgreSQL、Redis、Kafka、Docker、K8s | 你的存量优势 |
+
+**为什么用 `openai` SDK 而不是 DeepSeek 专用 SDK？**
+
+因为国内厂商（DeepSeek / Qwen / GLM / Kimi）几乎都实现了 **OpenAI 兼容协议**。
+用 `openai` SDK 只是当 HTTP 客户端用，换厂商只改 `.env` 三行，代码零改动。
+
+---
+
+## 五、切换其他大模型
 
 代码**与厂商无关**，只改 `.env` 里三个变量即可，Python 一行都不用动：
 
 | 厂商 | LLM_BASE_URL | LLM_MODEL |
 | --- | --- | --- |
-| **DeepSeek**（当前） | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| **DeepSeek**（✅ 当前主推） | `https://api.deepseek.com` | `deepseek-chat` |
+| DeepSeek 推理模型 | `https://api.deepseek.com` | `deepseek-reasoner` |
 | 阿里云百炼 Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
 | Moonshot Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | OpenAI（需代理） | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | 本地 Ollama | `http://localhost:11434/v1` | `qwen2.5:7b` |
 
+> DeepSeek 的地址带不带 `/v1` 都可以（已实测），`/v1` 只是为兼容 OpenAI 而保留，与模型版本无关。
+
 ---
 
-## 五、故障排查
+## 六、故障排查
 
 | 现象 | 原因 | 解决 |
 | --- | --- | --- |
@@ -158,18 +190,18 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 | `❌ 余额不足（402）` | 账户没钱 | 去平台充值 |
 | `❌ 连接不上 LLM 服务` | 网络 / 地址写错 | 检查 `LLM_BASE_URL`；境外服务需开代理 |
 | `❌ 找不到资源（404）` | 模型名或地址写错 | 对照上表核对 |
-| `❌ .env 里的 LLM_API_KEY 还是占位符` | 忘了填 Key | 编辑 `.env` |
+| `❌ .env 里的 DEEPSEEK_API_KEY 还是占位符` | 忘了填 Key | 编辑 `.env` |
 | 中文输出乱码 | PowerShell 编码 | 先执行 `chcp 65001` |
 | 文字卡住不逐字显示 | 缓冲区未刷新 | 代码里必须有 `flush=True` |
 
 ---
 
-## 六、学习进度
+## 七、学习进度
 
 | Day | 主题 | 状态 |
 | --- | --- | --- |
 | 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ |
-| 01+ | **第一个 LLM Client：调用 / Streaming / CLI 对话 / 上下文记忆** | ✅ |
+| 01+ | **第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆** | ✅ |
 | 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
@@ -179,7 +211,7 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 
 ---
 
-## 七、约定
+## 八、约定
 
 1. **每天一个 commit**，提交信息格式：`day01: 主题`。
 2. **API Key 绝不入库**：统一放在 `.env`；提交前可用 `git status` 确认 `.env` 不在列表里。

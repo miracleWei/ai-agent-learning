@@ -32,6 +32,14 @@ Message = dict[str, str]
 # 没配 LLM_MODEL 时的兜底模型
 DEFAULT_MODEL = "deepseek-chat"
 
+# 没配 LLM_BASE_URL 时的兜底地址
+# 主推 DeepSeek（国内直连、无需代理）；换厂商就在 .env 里显式写 LLM_BASE_URL
+DEFAULT_BASE_URL = "https://api.deepseek.com"
+
+# 读取 API Key 时按优先级依次尝试的环境变量名
+# 以 DeepSeek 为主推，同时兼容通用命名（LLM_）与 OpenAI 命名
+API_KEY_VARS: tuple[str, ...] = ("DEEPSEEK_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY")
+
 # 认定为「还是占位符、没填真 Key」的特征串
 _PLACEHOLDER_HINTS = ("在这里填入", "xxxxxxxx", "your-key", "your_key", "填入你的")
 
@@ -50,17 +58,20 @@ class LLMConfig:
 
     api_key: str
     model: str = DEFAULT_MODEL
-    base_url: str | None = None
+    base_url: str | None = DEFAULT_BASE_URL
     temperature: float = 0.7
     timeout: float = 60.0
     stream_usage: bool = True
+    # 记录 api_key 是从哪个环境变量读到的，便于排查配置问题
+    key_source: str = ""
 
     def describe(self) -> str:
         """返回一段用于自检展示的描述（绝不包含 Key 本身）。"""
         masked = f"{self.api_key[:6]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "***"
+        source = f" (来自 {self.key_source})" if self.key_source else ""
         return (
-            f"模型={self.model} | 地址={self.base_url or '官方默认'} | "
-            f"Key={masked} | temperature={self.temperature}"
+            f"模型={self.model} | 地址={self.base_url or '未设置'} | "
+            f"Key={masked}{source} | temperature={self.temperature}"
         )
 
     @classmethod
@@ -73,21 +84,30 @@ class LLMConfig:
         # 把 .env 读进 os.environ；重复调用是安全的，不会重复生效
         load_dotenv()
 
-        # 兼容两种命名：优先 LLM_API_KEY，其次 OPENAI_API_KEY
-        api_key = (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        # 按优先级找一个非空的 Key，并记住它来自哪个变量名（报错时要提示到具体变量）
+        api_key, key_var = "", API_KEY_VARS[0]
+        for var in API_KEY_VARS:
+            value = (os.getenv(var) or "").strip()
+            if value:
+                api_key, key_var = value, var
+                break
+
         model = (os.getenv("LLM_MODEL") or DEFAULT_MODEL).strip()
-        base_url = (os.getenv("LLM_BASE_URL") or "").strip() or None
+        # 只填了 Key、没填地址时，默认走 DeepSeek，避免误打到 OpenAI 官方接口
+        base_url = (os.getenv("LLM_BASE_URL") or "").strip() or DEFAULT_BASE_URL
 
         if not api_key:
+            tried = " / ".join(API_KEY_VARS)
             raise LLMError(
                 "❌ 没有找到 API Key。\n"
                 "   请在本目录创建 .env 文件（可从 .env.example 复制），写入：\n"
-                "       LLM_API_KEY=你的密钥"
+                f"       {API_KEY_VARS[0]}=你的密钥\n"
+                f"   （代码会按优先级依次尝试这些变量名：{tried}）"
             )
         if any(hint in api_key for hint in _PLACEHOLDER_HINTS):
             raise LLMError(
-                "❌ .env 里的 LLM_API_KEY 还是占位符，没有填真实密钥。\n"
-                "   请打开 .env，把 LLM_API_KEY 换成你自己的 Key 后重试。"
+                f"❌ .env 里的 {key_var} 还是占位符，没有填真实密钥。\n"
+                f"   请打开 .env，把 {key_var} 换成你自己的 Key 后重试。"
             )
 
         def _float(name: str, default: float) -> float:
@@ -104,6 +124,7 @@ class LLMConfig:
             timeout=_float("LLM_TIMEOUT", 60.0),
             stream_usage=(os.getenv("LLM_STREAM_USAGE", "true") or "true").lower()
             not in {"false", "0", "no"},
+            key_source=key_var,
         )
 
 
@@ -123,7 +144,11 @@ def _friendly_error(exc: Exception) -> str:
     status = getattr(exc, "status_code", None)
 
     if isinstance(exc, openai.AuthenticationError):
-        return "❌ 鉴权失败（401）：API Key 无效或已失效。请检查 .env 里的 LLM_API_KEY。"
+        return (
+            "❌ 鉴权失败（401）：API Key 无效或已失效。\n"
+            "   请检查 .env 里的 DEEPSEEK_API_KEY（或 LLM_API_KEY / OPENAI_API_KEY）。\n"
+            "   DeepSeek 控制台：https://platform.deepseek.com/api_keys"
+        )
     if status == 402:
         return "❌ 余额不足（402）：请到模型平台充值后重试。"
     if isinstance(exc, openai.RateLimitError):
