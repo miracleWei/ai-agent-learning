@@ -21,10 +21,15 @@ ENV/
 !.env.example
 
 # ---------- 提交信息临时文件 ----------
-# gc.ps1 -MessageFile 用的临时文件，用完即弃，不该入库
-_msg*.txt
-commit_msg*.txt
-.gitmessage.tmp
+# gc.ps1 -MessageFile 用的临时文件，用完即弃，不该入库。
+# 用 / 开头锚定仓库根目录，避免误伤子目录里的同名文件。
+# 模式要写得够宽：之前只写了 _msg*.txt / commit_msg*.txt，
+# 结果 _commit_msg.txt 漏网被提交（这是真实的疏漏）。
+/_msg*.txt
+/_commit_msg*.txt
+/*_msg*.txt
+/.gitmessage.tmp
+/_chat_old*.py
 
 # ---------- 缓存 ----------
 .cache/
