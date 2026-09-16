@@ -138,144 +138,44 @@ DEFAULT_MAX_CONTEXT_TOKENS = 2000
 #     取决于"这段文字在词表里有没有现成的 token"。
 #     要精确的话必须用真正的分词器（tiktoken / transformers 的 tokenizer）。
 # ---------------------------------------------------------------
-_TOKENS_PER_CJK_CHAR = 0.5
-_TOKENS_PER_WS_CHAR = 0.05
-_TOKENS_PER_OTHER_CHAR = 0.28
-
-# 每条消息的结构开销：role 标记、消息分隔符、特殊 token 等
-# 实测：单条消息的固定开销约 4 token（与内容无关）
-_TOKENS_PER_MESSAGE_OVERHEAD = 4
-
-
-def _is_cjk(ch: str) -> bool:
-    """判断是不是中日韩字符。
-
-    为什么要单独区分？因为这类字符的 token 密度和英文完全不同：
-        中文 「你好世界」   4 字 → 2 token  （约 0.5/字）
-        英文 "abcdefgh"   8 字符 → 2 token  （约 0.25/字符）
-    混在一起算会两边都不准。
-
-    Java 类比：相当于自己写一个 Character.UnicodeBlock 判断。
-    """
-    code = ord(ch)
-    return (
-        0x4E00 <= code <= 0x9FFF      # CJK 统一表意文字（最常用）
-        or 0x3400 <= code <= 0x4DBF   # CJK 扩展 A
-        or 0x3000 <= code <= 0x303F   # CJK 标点（。、「」等）
-        or 0xFF00 <= code <= 0xFFEF   # 全角字符
-        or 0x3040 <= code <= 0x30FF   # 日文假名
-    )
-
-
-def estimate_tokens(text: str) -> int:
-    """估算一段文本的 token 数。
-
-    ⚠️ 这是【估算】，不是精确值。误差约 ±30%（偏保守/偏高）。
-       用途是决定"要不要裁掉更早的历史"，不是用来给用户算钱。
-       精确值请读 API 返回的 usage.prompt_tokens。
-
-    Args:
-        text: 任意文本。
-
-    Returns:
-        估算的 token 数，至少为 1（即使空串）。
-    """
-    if not text:
-        return 1
-
-    cjk = ws = 0
-    for ch in text:
-        if ch.isspace():
-            ws += 1
-        elif _is_cjk(ch):
-            cjk += 1
-    other = len(text) - cjk - ws
-
-    estimated = (
-        cjk * _TOKENS_PER_CJK_CHAR
-        + ws * _TOKENS_PER_WS_CHAR
-        + other * _TOKENS_PER_OTHER_CHAR
-    )
-    # 用 round 而不是 int()：int() 会把 0.9 截成 0，导致极小内容被算成 0
-    return max(1, round(estimated))
+# ---------------------------------------------------------------
+#  ⚠️ token 估算 + 裁剪的【实现】已移到 context_manager.py
+#
+#  为什么搬走？
+#      1. 单一数据源：之前 chat.py 和 context_manager.py 各有一份，
+#         改一处漏一处（本项目真踩过这类坑）
+#      2. 职责更清晰：chat.py 是"单来源的 CLI 教学程序"，
+#         context_manager.py 是"多来源的 Agent 基础设施"
+#
+#  为什么这里还留 import 而不是直接删掉？
+#      为了让老代码和测试仍然能用 chat.estimate_tokens(...) 这样的写法，
+#      不必立刻改一堆调用点。（渐进式重构，不是推倒重来）
+#
+#  ⭐ 关键设计取舍回顾（数据见 context_manager.py 的注释）：
+#      估算器刻意偏高估 —— 高估只是多裁历史（安全），
+#      低估会让请求超出模型窗口而直接失败（危险）。
+#      「安全优先于精确」。
+# ---------------------------------------------------------------
+from context_manager import (  # noqa: E402  （放在这里是刻意的：让读者先看到说明）
+    DEFAULT_PRIORITY,
+    ContextManager,
+    ContextSource,
+    count_messages_tokens,
+    estimate_tokens,
+    is_cjk as _is_cjk,
+    trim_by_tokens,
+)
 
 
 def _message_cost(msg: Message) -> int:
     """估算单条消息的总开销 = 内容 token + 结构开销。"""
-    return estimate_tokens(msg.get("content") or "") + _TOKENS_PER_MESSAGE_OVERHEAD
+    return estimate_tokens(msg.get("content") or "") + 4
 
 
 def messages_tokens(messages: list[Message]) -> int:
     """估算整个消息列表的 token 数（发送前的预算检查用）。"""
-    return sum(_message_cost(m) for m in messages)
+    return count_messages_tokens(messages)
 
-
-def trim_by_tokens(
-    messages: list[Message],
-    max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
-) -> list[Message]:
-    """按【token 预算】裁剪历史 —— 替代按条数的 trim_messages()。
-
-    这是 Challenge 3 的产物。相比按条数裁剪，它解决了核心问题：
-
-        按条数：max_messages=6 可能对应 20 token，也可能 1000 token（不可控）
-        按 token：无论消息长短，总量都被压在预算内（可控）
-
-    ⭐ 三条设计规则（和 trim_messages 一致，因为这是【语义】约束）：
-        ① system 永远保留
-        ② 不切开 user/assistant 对
-        ③ 裁剪后首条必须是 user
-
-    ⭐ 一条新规则（token 版特有）：
-        ④ 最新的那条消息必须保留，哪怕它单独就超预算
-
-           为什么？因为最新消息 = 用户当前的问题。
-           裁掉它的话，模型收到的历史里没有"要回答什么"，完全答非所问。
-           宁可让它超预算（请求可能失败，或者让上游去报错），
-           也不能静默地把问题丢掉。
-
-    Args:
-        messages: 完整上下文。
-        max_tokens: 整个请求（含 system）的输入 token 预算。
-
-    Returns:
-        新的列表（不修改入参）。
-    """
-    system_msgs = [m for m in messages if m.get("role") == "system"]
-    dialog = [m for m in messages if m.get("role") != "system"]
-
-    # system 被规则 ① 强制保留，所以它的开销要先从预算里扣掉
-    system_cost = sum(_message_cost(m) for m in system_msgs)
-    budget = max_tokens - system_cost
-
-    # 极端情况：system 自己就把预算吃光了。
-    # 这时只能保留 system（不能把 system 砍掉 —— 它是人设，
-    # 砍掉是"换了个人"，比"没有历史"严重得多）。
-    if budget <= 0:
-        return system_msgs
-
-    # 从【最新】往【最旧】装，装到放不下为止
-    kept: list[Message] = []
-    used = 0
-    for msg in reversed(dialog):
-        cost = _message_cost(msg)
-        # ⚠️ 关键：判断条件里有 `kept and`
-        #    kept 为空 = 正在处理最新那条 → 无条件装进去（规则 ④）
-        #    kept 非空 = 处理更早的消息 → 装不下就停
-        if kept and used + cost > budget:
-            break
-        kept.append(msg)
-        used += cost
-
-    # reversed 之后是从新到旧，要翻回来变成正常的时间顺序
-    kept.reverse()
-
-    # 规则 ②③：从第一条 user 开始切
-    start = 0
-    while start < len(kept) and kept[start].get("role") != "user":
-        start += 1
-
-    return system_msgs + kept[start:]
 
 # 帮助文本。用三引号字符串（Python 的多行字符串），
 # 相当于 Java 15+ 的 text block（""" ... """）。

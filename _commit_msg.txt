@@ -1,0 +1,38 @@
+feat: 新增 Token Budget Context Manager（多来源 + 优先级 + 可观测）
+
+背景：原 trim_by_tokens 只能处理【单一来源】（对话历史），
+决策规则只有一条（从最旧裁）。但真实 Agent 的上下文有多种来源，
+重要性差异极大 —— 一次 tool result 实测可达 5803 token，
+5 个 RAG chunk 达 1885 token，合计 7688 直接吃光 8000 预算。
+
+新增 context_manager.py（可独立复用）：
+- 六种来源 ContextSource：system/question/memory/rag/tool/history
+- 优先级表 DEFAULT_PRIORITY（不是按时间裁，是按价值裁）：
+      system 100 (pinned) / question 90 (pinned) / memory 80
+      rag 70 / tool 60 / history 50
+  HISTORY 最低是有意为之 —— 避免把预算花在"嗯嗯""谢谢"这类寒暄上
+- pinned 语义：system 和当前问题超预算也要留；
+  若 pinned 自身超预算则【明确报错】而非静默降级
+- 单条截断（tool result 爆炸）：截断 + 标记，
+  而不是整块丢弃 —— Agent 至少知道"有个大结果"可决定缩小查询
+- ContextReport 可观测性：谁被保留/丢弃/截断、各多少 token、利用率、警告
+
+⭐ 测试跑出的真实设计缺陷（已修复）：
+  最初的分配是"装不下就整块丢"。实测预算 1500 时：
+      RAG 需 1860 → 整块被丢
+      但 962 token 完全没用上，利用率仅 37.2%
+  → 贪心整块分配会浪费预算、让高价值内容白白损失。
+  修正为通用【部分保留】：新增 Segment.keep_direction
+      "tail" —— 历史从最新往前拿
+      "head" —— RAG 从最相关往后拿（每 chunk 单条消息，可逐块保留）
+  修复后同样场景：利用率 37.2% → 99.8%，RAG 从 0 条 → 3/5 条
+
+其他重构：
+- chat.py 改为从 context_manager 导入，删除重复的估算器与裁剪实现
+  （单一数据源 —— 本项目曾因逻辑重复踩过 main.py 漏改变量名的坑）
+- 用备份文件对照验证：8 项 API 存在性 + 19 组行为对照全部一致，零回归
+
+测试覆盖（8 组，全部通过）：
+  ① 各来源原始规模测量  ② 预算充足  ③ 预算紧张（部分保留）
+  ④ tool 爆炸截断      ⑤ pinned 超预算报错  ⑥ 预算单调性
+  ⑦ 语义顺序正确性      ⑧ 与原 trim_by_tokens 行为一致性
