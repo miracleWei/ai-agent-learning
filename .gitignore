@@ -20,6 +20,12 @@ ENV/
 .env.*
 !.env.example
 
+# ---------- 提交信息临时文件 ----------
+# gc.ps1 -MessageFile 用的临时文件，用完即弃，不该入库
+_msg*.txt
+commit_msg*.txt
+.gitmessage.tmp
+
 # ---------- 缓存 ----------
 .cache/
 .pytest_cache/
