@@ -1,0 +1,18 @@
+chore: 新增 gc.ps1 安全提交助手，绕过 PSReadLine 长输入崩溃
+
+背景：PowerShell 5.1 的 PSReadLine 遇到长多行输入会崩
+（ArgumentOutOfRangeException: top 实际值是 -7），
+反复重渲染整个输入历史并刷屏堆栈，且崩溃后终端里后续命令
+（如 git push）可能静默超时。本项目已踩坑 2 次，都发生在大段
+中文 commit message 上。
+
+gc.ps1 的做法：
+- 用 git commit -F <file> 从文件读 message，彻底不在命令行传长字符串
+- 提交前强制检查 .env 是否被暂存，发现即中止并提示（密钥绝不入库）
+- commit 与 push 分成两步执行，失败时能看清是"提交成功但推送失败"
+- 统一在脚本所在目录（仓库根）执行，避免跑错目录
+
+用法：
+    .\gc.ps1 "简短标题"
+    .\gc.ps1 -File .\commit_msg.txt      # 多行消息推荐
+    .\gc.ps1 -File .\commit_msg.txt -NoPush
