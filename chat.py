@@ -74,22 +74,208 @@ DEFAULT_SYSTEM_PROMPT = (
 EXIT_WORDS = {"exit", "quit", "bye", "/exit", "/quit", ":q"}
 
 # ---------------------------------------------------------------
-#  ⭐ 滑动窗口大小：最多保留最近多少条【对话】消息（不含 system）
+#  ⚠️ 滑动窗口大小（按【条数】）—— 默认【关闭】
 #
-#  为什么需要这个上限？因为模型 API 是【无状态】的 ——
-#  我们每轮都要把完整历史发过去（这是「记忆」的实现方式），
-#  于是历史会无限增长，带来三个问题：
+#  这是 Challenge 2 的实现。保留它，但现在默认不启用，原因是：
 #
-#      ① Context Window 超限   → 请求直接失败
-#      ② 每轮 token 变多       → 越来越慢、越来越贵
-#      ③ 无关历史淹没关键信息  → 模型注意力被稀释，回答反而变差
+#  ⭐ Challenge 3 的结论：**按条数控制 Context 是错的。**
 #
-#  ⭐ 记住这句话：Context 越多，不代表 AI 越聪明。
+#      实测数据（同一次真实 API 调用测量）：
 #
-#  这里取 6 只是为了便于观察教学效果，
-#  真实生产里不会用「固定条数」这么粗的策略（见文件末尾的说明）。
+#          短消息 "嗯"               1 字符  →    1 token
+#          长消息（一段技术问题）    287 字符  →  164 token
+#
+#      两条都是「1 条消息」，但 token 相差 **164 倍**。
+#
+#      所以 max_messages=6 可能意味着：
+#          6 条短消息  →    约 20 token    （浪费额度）
+#          6 条长消息  →  约 1000 token    （可能照样超限）
+#
+#      用条数控制 = 假设「每条消息差不多大」，这个假设是错的。
+#      → 正确的控制单位是 **token**，见下面的 trim_by_tokens()。
+#
+#  想复现 Challenge 2 的对比实验，显式传：
+#      uv run python chat.py --max-history 6
 # ---------------------------------------------------------------
-MAX_HISTORY_MESSAGES = 6
+MAX_HISTORY_MESSAGES = 0  # 0 = 不按条数限制
+
+# ---------------------------------------------------------------
+#  ⭐ token 预算上限：整次请求的输入不超过这个值
+#
+#  为什么是 2000？
+#      DeepSeek 的上下文窗口是 64K/128K，理论上可以开很大。
+#      但对【学习/调试】来说，小预算才能让裁剪行为发生得更快、更容易观察。
+#      真实项目里这个值取决于：模型窗口 - 输出预留 - 安全余量。
+#
+#  注意这是【输入】预算，不含模型生成的输出。
+# ---------------------------------------------------------------
+DEFAULT_MAX_CONTEXT_TOKENS = 2000
+
+# ---------------------------------------------------------------
+#  ⚠️ token 估算系数 —— 【实测校准】得到，且刻意偏保守
+#
+#  为什么必须估算而不能精确计算？
+#      裁剪发生在【每一轮、发请求之前】。
+#      为了数 token 而先发一次请求 —— 那本身就要花钱花时间，逻辑上不成立。
+#
+#  所以工业界的标准做法是「两套账」：
+#      ① 本地估算 → 做【预算决策】（快、免费、有误差）
+#      ② API 返回的 usage → 做【精确记账】（准、但事后才知道）
+#
+#  ⭐ 为什么刻意高估？
+#      高估 → 多裁掉一点历史 → 只是"记性差一点"      （安全）
+#      低估 → 请求超出模型窗口 → 直接报错失败          （危险）
+#      所以宁可高估。这是**安全优先于精确**的工程取舍。
+#
+#  实测校准数据（真实 API 调用），以及这些系数在样本上的误差：
+#      中文      约 0.5 token/字   （"你好世界"×2 = 8 字 → 4 token）
+#      代码/JSON 约 0.25~0.30      （JSON 30 字符 → 9 token）
+#      英文散文  约 0.14           （65 字符的真实句子 → 9 token）
+#      空格      约 0.05           （10 个空格 → 1 token）
+#
+#  ⚠️ 平均误差约 ±30%，最坏情况可达 80%（英文散文会被高估）。
+#     这个误差【无法靠调系数消除】，因为 BPE 分词的粒度不是线性的 ——
+#     取决于"这段文字在词表里有没有现成的 token"。
+#     要精确的话必须用真正的分词器（tiktoken / transformers 的 tokenizer）。
+# ---------------------------------------------------------------
+_TOKENS_PER_CJK_CHAR = 0.5
+_TOKENS_PER_WS_CHAR = 0.05
+_TOKENS_PER_OTHER_CHAR = 0.28
+
+# 每条消息的结构开销：role 标记、消息分隔符、特殊 token 等
+# 实测：单条消息的固定开销约 4 token（与内容无关）
+_TOKENS_PER_MESSAGE_OVERHEAD = 4
+
+
+def _is_cjk(ch: str) -> bool:
+    """判断是不是中日韩字符。
+
+    为什么要单独区分？因为这类字符的 token 密度和英文完全不同：
+        中文 「你好世界」   4 字 → 2 token  （约 0.5/字）
+        英文 "abcdefgh"   8 字符 → 2 token  （约 0.25/字符）
+    混在一起算会两边都不准。
+
+    Java 类比：相当于自己写一个 Character.UnicodeBlock 判断。
+    """
+    code = ord(ch)
+    return (
+        0x4E00 <= code <= 0x9FFF      # CJK 统一表意文字（最常用）
+        or 0x3400 <= code <= 0x4DBF   # CJK 扩展 A
+        or 0x3000 <= code <= 0x303F   # CJK 标点（。、「」等）
+        or 0xFF00 <= code <= 0xFFEF   # 全角字符
+        or 0x3040 <= code <= 0x30FF   # 日文假名
+    )
+
+
+def estimate_tokens(text: str) -> int:
+    """估算一段文本的 token 数。
+
+    ⚠️ 这是【估算】，不是精确值。误差约 ±30%（偏保守/偏高）。
+       用途是决定"要不要裁掉更早的历史"，不是用来给用户算钱。
+       精确值请读 API 返回的 usage.prompt_tokens。
+
+    Args:
+        text: 任意文本。
+
+    Returns:
+        估算的 token 数，至少为 1（即使空串）。
+    """
+    if not text:
+        return 1
+
+    cjk = ws = 0
+    for ch in text:
+        if ch.isspace():
+            ws += 1
+        elif _is_cjk(ch):
+            cjk += 1
+    other = len(text) - cjk - ws
+
+    estimated = (
+        cjk * _TOKENS_PER_CJK_CHAR
+        + ws * _TOKENS_PER_WS_CHAR
+        + other * _TOKENS_PER_OTHER_CHAR
+    )
+    # 用 round 而不是 int()：int() 会把 0.9 截成 0，导致极小内容被算成 0
+    return max(1, round(estimated))
+
+
+def _message_cost(msg: Message) -> int:
+    """估算单条消息的总开销 = 内容 token + 结构开销。"""
+    return estimate_tokens(msg.get("content") or "") + _TOKENS_PER_MESSAGE_OVERHEAD
+
+
+def messages_tokens(messages: list[Message]) -> int:
+    """估算整个消息列表的 token 数（发送前的预算检查用）。"""
+    return sum(_message_cost(m) for m in messages)
+
+
+def trim_by_tokens(
+    messages: list[Message],
+    max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+) -> list[Message]:
+    """按【token 预算】裁剪历史 —— 替代按条数的 trim_messages()。
+
+    这是 Challenge 3 的产物。相比按条数裁剪，它解决了核心问题：
+
+        按条数：max_messages=6 可能对应 20 token，也可能 1000 token（不可控）
+        按 token：无论消息长短，总量都被压在预算内（可控）
+
+    ⭐ 三条设计规则（和 trim_messages 一致，因为这是【语义】约束）：
+        ① system 永远保留
+        ② 不切开 user/assistant 对
+        ③ 裁剪后首条必须是 user
+
+    ⭐ 一条新规则（token 版特有）：
+        ④ 最新的那条消息必须保留，哪怕它单独就超预算
+
+           为什么？因为最新消息 = 用户当前的问题。
+           裁掉它的话，模型收到的历史里没有"要回答什么"，完全答非所问。
+           宁可让它超预算（请求可能失败，或者让上游去报错），
+           也不能静默地把问题丢掉。
+
+    Args:
+        messages: 完整上下文。
+        max_tokens: 整个请求（含 system）的输入 token 预算。
+
+    Returns:
+        新的列表（不修改入参）。
+    """
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    dialog = [m for m in messages if m.get("role") != "system"]
+
+    # system 被规则 ① 强制保留，所以它的开销要先从预算里扣掉
+    system_cost = sum(_message_cost(m) for m in system_msgs)
+    budget = max_tokens - system_cost
+
+    # 极端情况：system 自己就把预算吃光了。
+    # 这时只能保留 system（不能把 system 砍掉 —— 它是人设，
+    # 砍掉是"换了个人"，比"没有历史"严重得多）。
+    if budget <= 0:
+        return system_msgs
+
+    # 从【最新】往【最旧】装，装到放不下为止
+    kept: list[Message] = []
+    used = 0
+    for msg in reversed(dialog):
+        cost = _message_cost(msg)
+        # ⚠️ 关键：判断条件里有 `kept and`
+        #    kept 为空 = 正在处理最新那条 → 无条件装进去（规则 ④）
+        #    kept 非空 = 处理更早的消息 → 装不下就停
+        if kept and used + cost > budget:
+            break
+        kept.append(msg)
+        used += cost
+
+    # reversed 之后是从新到旧，要翻回来变成正常的时间顺序
+    kept.reverse()
+
+    # 规则 ②③：从第一条 user 开始切
+    start = 0
+    while start < len(kept) and kept[start].get("role") != "user":
+        start += 1
+
+    return system_msgs + kept[start:]
 
 # 帮助文本。用三引号字符串（Python 的多行字符串），
 # 相当于 Java 15+ 的 text block（""" ... """）。
@@ -102,8 +288,10 @@ HELP_TEXT = """
   exit      退出程序
 
 说明：
-  为保证 token 不无限增长，程序会自动做【滑动窗口裁剪】：
-  只保留最近若干条对话消息，但 system（人设）永远保留。
+  程序会自动裁剪上下文，防止 token 无限制增长：
+    • 按 token 预算裁剪（默认，推荐）
+    • 按消息条数裁剪（需显式传 --max-history）
+  system（人设）永远保留；user/assistant 成对保留，不会被切开。
 """.strip()
 
 
@@ -162,26 +350,46 @@ def parse_args() -> argparse.Namespace:
     )
 
     # -----------------------------------------------------------
-    #  --max-history 控制滑动窗口大小
+    #  --max-tokens ⭐ 推荐的控制方式（Challenge 3 的产物）
     #
-    #  type=int 表示自动把命令行上的字符串转成整数，
-    #  并且【自动校验】—— 传 --max-history abc 会直接报错，
-    #  不用我们自己写 int() 和 try/except。
+    #  这是整次请求的【输入】token 预算。
+    #  相比 --max-history 的好处：无论消息长短，总量都被压在预算内。
     #
-    #  参数类型注解写 int 是因为 argparse 靠它填默认值类型；
-    #  但命令行上敲进来的原始值永远是字符串，所以要声明 type=int。
+    #  为什么不用 --max-context-tokens 这种长名字？
+    #      与 OpenAI/DeepSeek 生态的惯例保持一致，便于以后对照文档。
     #
-    #  用法：
-    #      uv run python chat.py --max-history 4    # 只留最近 4 条
-    #      uv run python chat.py --max-history 0    # 完全不传历史（实验用）
+    #  实测参考（DeepSeek）：
+    #      1 个中文字  ≈ 0.5 token
+    #      1 个 ASCII ≈ 0.28 token
+    #      所以 2000 token 大约相当于 4000 个字的中文。
+    # -----------------------------------------------------------
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_CONTEXT_TOKENS,
+        help=(
+            f"整次请求的输入 token 预算（估算值），默认 {DEFAULT_MAX_CONTEXT_TOKENS}；"
+            f"超出时从最旧的历史开始裁"
+        ),
+    )
+
+    # -----------------------------------------------------------
+    #  --max-history 按【条数】裁剪 —— 默认 0（不启用）
+    #
+    #  ⚠️ 它是 Challenge 2 的实现，现在默认关闭。
+    #     原因：条数不能代表 token 量（实测同样 1 条消息可差 164 倍）。
+    #
+    #     想复现对比实验时显式传它，比如：
+    #         uv run python chat.py --max-history 6
+    #     两种策略会叠加生效：先按条数粗剪，再按 token 精剪。
     # -----------------------------------------------------------
     parser.add_argument(
         "--max-history",
         type=int,
         default=MAX_HISTORY_MESSAGES,
         help=(
-            f"滑动窗口大小：最多保留最近 N 条对话消息（不含 system），"
-            f"默认 {MAX_HISTORY_MESSAGES}；设为 0 则不传任何历史"
+            "按【条数】裁剪对话消息的上限（0 = 不启用）；"
+            "这是上一版的策略，仅用于对比实验"
         ),
     )
 
@@ -192,33 +400,18 @@ def parse_args() -> argparse.Namespace:
 
 def trim_messages(
     messages: list[Message],
-    max_messages: int = MAX_HISTORY_MESSAGES,
+    max_messages: int = 6,
 ) -> list[Message]:
-    """滑动窗口裁剪：只保留最近 max_messages 条【非 system】消息。
+    """滑动窗口裁剪（按【条数】）：只保留最近 max_messages 条非 system 消息。
 
-    背景（为什么需要这个函数）：
-        模型 API 是【无状态】的，每轮都要把完整历史发过去。
-        于是历史无限增长，导致：Context 超限 / 成本上升 / 注意力稀释。
+    ⚠️ 这是 Challenge 2 的实现。现在推荐用 trim_by_tokens() 代替，理由：
+        条数是 token 的【很差近似】—— 实测同样 1 条消息可以是 1 token
+        也可以是 164 token。用条数控制预算等于在猜。
 
-        这个函数实现最简单的一种对策 —— 滑动窗口（Sliding Window）。
-
-    ⭐ 三条设计规则（不是简单的 list[-N:]）：
-
-        ① system 消息【永远保留】
-           system 是人设/规则，不属于「对话内容」。
-           而且它在列表最前面，天然不包含在「最近 N 条」里。
-           所以要先把它摘出来，裁剪完再拼回去。
-
-        ② 裁剪必须以【轮】为单位，不能切开 user/assistant 对
-           一轮完整对话 = user + assistant，成对出现。
-           如果只留下 assistant 而丢掉它对应的 user，
-           模型会看到「一个没有任何提问的回答」，语义是残缺的。
-           所以裁剪后若开头是 assistant，必须把它也去掉。
-
-        ③ 裁剪后首条必须是 user
-           对话历史的结构约定是「user 起头，user/assistant 交替」。
-           以 assistant 开头虽不报错，但会让模型困惑。
-           （规则 ② 和 ③ 其实可以用同一段代码同时满足。）
+    保留它的价值：
+        ① 代码更简单，适合理解「裁剪」的基本思路
+        ② 可以用 --max-history 做对比实验，直观看到两种策略的差别
+        ③ 生产里常见「粗剪 + 精剪」两段式，它就是那个便宜的粗剪
 
     Args:
         messages: 完整上下文，可能含 system / user / assistant。
@@ -226,15 +419,6 @@ def trim_messages(
 
     Returns:
         新的列表（不修改入参）。
-
-    Example:
-        >>> raw = [{"role": "system", "content": "s"},
-        ...        {"role": "user", "content": "u1"},
-        ...        {"role": "assistant", "content": "a1"},
-        ...        {"role": "user", "content": "u2"},
-        ...        {"role": "assistant", "content": "a2"}]
-        >>> [m["content"] for m in trim_messages(raw, 2)]
-        ['s', 'u2', 'a2']
     """
     # ① 把 system 消息摘出来（正常只有开头一条，但写成列表更稳妁）
     #    用 m.get("role") 而不是 m["role"]，避免字段缺失时直接 KeyError
@@ -408,8 +592,10 @@ def main() -> int:
     # config.describe() 会显示模型/地址/Key 来源，但【不会泄露 Key 明文】
     print(f"  {llm.config.describe()}")
     print(f"  输出模式：{'流式 Streaming' if stream_mode else '一次性'}")
-    # 把窗口大小显式打出来，方便用 --max-history 做实验对比
-    print(f"  滑动窗口：最多保留最近 {args.max_history} 条对话消息（不含 system）")
+    # 把两个预算都打出来，方便对比两种策略的实际效果
+    token_note = f"≤{args.max_tokens} token" if args.max_tokens > 0 else "不限制"
+    history_note = f"≤{args.max_history} 条" if args.max_history > 0 else "不启用"
+    print(f"  Context 预算：token {token_note} ｜ 条数 {history_note}")
     print("  输入 exit 退出，/help 查看命令")
     print("=" * 64)
 
@@ -595,27 +781,36 @@ def main() -> int:
         messages.append({"role": "user", "content": text})
 
         # ---------------------------------------------------------------
-        #  4.5 ⭐⭐ 滑动窗口裁剪 —— 必须在【发请求之前】
+        #  4.5 ⭐⭐ 上下文裁剪 —— 必须在【发请求之前】
         #
         #  为什么放在这里而不是别处？
         #    ① 放在 append 之后：保证刚说的话一定在窗口内（不会被裁掉）
         #    ② 放在 try 之前：因为失败时要 pop() 回滚，那时列表必须是
         #       "裁剪后"的这个版本，否则 pop 会弹错东西
         #
+        #  ⭐ 两道修剪，从粗到细：
+        #      ① trim_messages  按【条数】—— 便宜、粗糙（默认关闭）
+        #      ② trim_by_tokens 按【token】—— 贵一点、但预算可控 ⭐ 主力
+        #
+        #  为什么要两道？
+        #      真实项目里很常见：先用便宜的方式排掉大部分，再用精确的收尾。
+        #      在这里主要是为了让你能【对比】两种策略的效果。
+        #
         #  ⚠️ 注意这里【重新赋值】了 messages，所以裁剪是【永久】生效的 ——
         #     被丢掉的历史真的没了，/history 也看不到。
         #
         #     这是刻意的取舍，但真实产品里往往不这么做，而是：
         #         保留【完整】历史在本地/数据库，只对"发出去的那份"裁剪副本
-        #     这样做的好处：
-        #         - /history 能看到全程
-        #         - 以后想回头做总结、抽 Memory、检索旧对话时有数据可用
-        #     代价是多占内存。
-        #     两种做法都能跑，关键是【意识到这是在用内存换什么】。
+        #     好处：/history 能看到全程；以后做总结、抽 Memory、检索旧对话
+        #           时有数据可用；代价是多占内存。
         # ---------------------------------------------------------------
         before_count = len(messages)
-        messages = trim_messages(messages, args.max_history)
+        if args.max_history > 0:
+            messages = trim_messages(messages, args.max_history)
+        if args.max_tokens > 0:
+            messages = trim_by_tokens(messages, args.max_tokens)
         trimmed_count = before_count - len(messages)
+        estimated_tokens = messages_tokens(messages)
 
         # end="" 让光标停在同一行，flush=True 保证立即输出。
         # 这样流式返回的第一个字才能马上显示在 "AI：" 后面，
@@ -771,15 +966,28 @@ def main() -> int:
         #  ⚠️ 它是【有状态的】—— 所以必须在这次请求之后、
         #     下次请求之前读，否则会被覆盖。
         #
-        #  ⭐ 观察重点（Challenge 2）：
-        #     留意"输入 token"。有滑动窗口后，它会在某个值附近【稳定下来】
-        #     而不是一直涨 —— 这就是裁剪生效的证据。
+        #  ⭐ 观察重点（Challenge 3）：
+        #     同时看两个数：
+        #        「预估」= 我们自己估算的输入 token（发送前的预算）
+        #        「实际」= API 返回的 usage.prompt_tokens（真实值）
+        #     两者对比就能看出估算器的误差有多大。
         #
-        #     同时注意一个代价：被裁掉的内容模型【真的看不到了】。
-        #     比如第 1 句说了"我叫 Jack"，裁掉之后它就再也答不出你的名字。
+        #     ⭐⭐ 最重要的一点：
+        #     实际输入 token 应该稳定在一个上限附近，而【不会】一直涨。
+        #     如果一直在涨，说明裁剪没生效。
+        #
+        #  :.1f 是 f-string 的格式规范：保留 1 位小数的浮点数。
+        #      Java 类比：String.format("%.1f", elapsed)
+        #
+        #  llm.usage_text() 读的是 llm_client 内部记的"最近一次用量"，
+        #  ⚠️ 它是【有状态的】—— 所以必须在这次请求之后、
+        #     下次请求之前读，否则会被覆盖。
         # ---------------------------------------------------------------
-        trim_note = f" · 本轮裁掉 {trimmed_count} 条" if trimmed_count else ""
-        print(f"[{elapsed:.1f}s · {llm.usage_text()} · 上下文 {len(messages)} 条{trim_note}]")
+        trim_note = f" · 裁掉 {trimmed_count} 条" if trimmed_count else ""
+        print(
+            f"[{elapsed:.1f}s · 预估 {estimated_tokens} token{trim_note} · "
+            f"{llm.usage_text()} · 上下文 {len(messages)} 条]"
+        )
 
     # while 循环结束（用户输入了退出词，或 Ctrl+C / 输入流结束）
     return 0

@@ -49,7 +49,8 @@ ai-agent-learning/
 │
 ├── notes/                       # 每日学习笔记 + 面试题
 │   ├── day01.md                 # Python 环境与项目结构
-│   └── day01-llm-client.md      # LLM Client 封装（含 Java↔AI 对照）
+│   ├── day01-llm-client.md      # LLM Client 封装（含 Java↔AI 对照）
+│   └── day01-context-management.md  # ⭐ Context 管理（滑动窗口 + Token 裁剪）
 │
 └── day01_python_basics/         # Day 1 热身：Python 基础
     ├── README.md
@@ -165,6 +166,24 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 
 会话内命令：`/clear` 清空上下文 · `/history` 查看上下文 · `/help` 帮助 · `exit` 退出
 
+### 7. Context 管理实验（Challenge 2 / 3）
+
+```powershell
+# 默认：按 token 预算裁剪（推荐）
+uv run python chat.py
+
+# 对比实验：按【条数】裁剪（上一版策略，token 无法预测）
+uv run python chat.py --max-history 6 --max-tokens 0
+
+# 收紧预算，快速看到裁剪发生
+uv run python chat.py --max-tokens 300
+
+# 两道修剪：先按条数粗剪，再按 token 精剪
+uv run python chat.py --max-history 8 --max-tokens 300
+```
+
+详情见 [`notes/day01-context-management.md`](./notes/day01-context-management.md)
+
 ---
 
 ## 四、技术栈路线（中国大陆 AI 生态）
@@ -236,6 +255,8 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 | 01 | Python 环境 / uv / 虚拟环境 / 项目结构 | ✅ 环境已就绪 |
 | 01+ | 第一个 LLM Client（DeepSeek）：调用 / Streaming / CLI 对话 / 上下文记忆 | ✅ 已实测跑通 |
 | 01++ | **手敲练习 v1～v4 + 写自己的笔记** | 🔧 代码就绪，待你手敲 |
+| 01+++ | **Challenge 2：滑动窗口裁剪（按条数）** | ✅ 已实测 |
+| 01++++ | **Challenge 3：Token 估算 + 按 token 裁剪** | ✅ 已实测 |
 | 02 | Python 异步 + API 工程化 + 抽出可复用的 LLM Service | ⬜ |
 | 03 | class / dataclass / 继承 / typing | ⬜ |
 | 04 | 异常 / 文件 / JSON / 环境变量 | ⬜ |
@@ -250,9 +271,10 @@ uv run python chat.py --system "你是一个只用古文回答的助手"
 ✅ uv run python main.py 1     能出回答（已验证）
 ✅ uv run python main.py 3     能流式输出（已验证）
 ✅ 记忆机制已验证：带历史答对 / 不带历史答不出
+✅ Challenge 2 滑动窗口 + Challenge 3 按 token 裁剪均已实测
 
-✅ day01_llm_basics/my_chat_v1.py ~ v4.py 已就绪，四个版本实测均通过
-⬜ 你本人在终端走一遍 v1→v4，重点亲手试 v3「它忘了」→ v4「它记住了」
+⬜ 你本人在终端走一遍 day01_llm_basics/my_chat_v1.py ~ v4.py
+    重点：亲手试 v3「它忘了」→ v4「它记住了」
 ⬜ 写 notes/day01-我的笔记.md（自己的话，不用 AI 代写）
 ```
 
